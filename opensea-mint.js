@@ -54,7 +54,10 @@ function loadEnv() {
       const val = t.slice(eq + 1).trim().replace(/^["']|["']$/g, "");
       if (key === "OPENSEA_API_KEY") result.apiKey = val;
       else if (key.startsWith("RPC_")) result.rpcs[key.slice(4).toLowerCase()] = val;
-      else if (key === "PK_FIRST" || key.startsWith("PK_")) result.privateKeys.push({ label: key, key: val });
+      else if (key === "PK_FIRST" || key.startsWith("PK_")) {
+      const rawLabel = key === "PK_FIRST" ? "first" : key.slice(3).toLowerCase();
+      result.privateKeys.push({ label: rawLabel, key: val });
+    }
     }
   } catch { /* .env not found */ }
   return result;
@@ -308,11 +311,23 @@ function parseWalletSelection(input, keys) {
   }
 
   // Comma separated: "1,3,16" atau "first,2,8"
+  // Single wallet
+  if (!input.includes(",")) {
+    if (input === "first") return [0];
+    const n = parseInt(input);
+    if (!isNaN(n) && n >= 1 && n <= total) return [n - 1];
+    // Cari by label
+    const idx = keys.findIndex(k => k.label === input);
+    if (idx !== -1) return [idx];
+    return [];
+  }
   return input.split(",").map(s => {
     s = s.trim();
     if (s === "first") return 0;
     const n = parseInt(s);
-    return isNaN(n) ? -1 : n - 1;
+    if (!isNaN(n)) return n - 1;
+    const idx = keys.findIndex(k => k.label === s);
+    return idx;
   }).filter(i => i >= 0 && i < total);
 }
 
@@ -344,12 +359,18 @@ async function main() {
   const rpcUrl = env.rpcs[chain] ?? DEFAULT_RPC[chain];
 
   // ── Pilih wallet ──
-  console.log(`\n[@] Total wallet di .env: ${env.privateKeys.length}`);
-  env.privateKeys.forEach((pk, i) => console.log(`    [${i+1}] ${pk.label}`));
-  const walletInput = await prompt(`[?] Wallet mana? (all / 1,3,16 / first,2,8 / from 3): `);
+  console.log(`\n[@] Wallet tersedia (${env.privateKeys.length} total):`);
+  env.privateKeys.forEach((pk, i) => console.log(`    [${i+1}] wallet ${pk.label}`));
+  console.log(`\n    Opsi:`);
+  console.log(`    [1] 1 wallet      contoh: first  atau  3`);
+  console.log(`    [2] Beberapa      contoh: first,2,5  atau  1,3,7`);
+  console.log(`    [3] Semua         ketik:  all`);
+  console.log(`    [4] Dari X        contoh: from 3`);
+  const walletInput = await prompt(`\n[?] Pilih wallet: `);
   const selectedIdx = parseWalletSelection(walletInput, env.privateKeys);
+  if (selectedIdx.length === 0) { console.error("[!] Tidak ada wallet yang dipilih"); process.exit(1); }
   const selectedWallets = selectedIdx.map(i => env.privateKeys[i]);
-  console.log(`[@] Dipilih: ${selectedWallets.map(w => w.label).join(", ")}`);
+  console.log(`[@] Dipilih: ${selectedWallets.map(w => `wallet ${w.label}`).join(", ")}`);
 
   // ── Fetch drop info dari GQL pake wallet pertama (tanpa auth dulu) ──
   console.log(`\n[@] Fetching drop info ...`);
@@ -412,7 +433,7 @@ async function main() {
       continue;
     }
 
-    console.log(`\n[@] ${label} | ${walletAddress}`);
+    console.log(`\n[@] wallet ${label} | ${walletAddress}`);
 
     // Auth SIWE
     let jwt = null;
