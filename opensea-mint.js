@@ -388,27 +388,52 @@ async function main() {
   let rpcUrl;
   try {
     rpcUrl = await getWorkingRpc(chain, env.rpcs[chain]);
-    process.stdout.write(`[@] RPC OK: ${rpcUrl}
+    process.stdout.write(`
+[@] RPC OK: ${rpcUrl}
 `);
   } catch (e) {
-    process.stdout.write(`[!] ${e.message}
+    process.stdout.write(`
+[!] ${e.message}
 `);
     process.exit(1);
   }
 
   // ── Pilih wallet ──
-  console.log(`\n[@] Wallet tersedia (${env.privateKeys.length} total):`);
-  env.privateKeys.forEach((pk, i) => console.log(`    [${i+1}] wallet ${pk.label}`));
-  console.log(`\n    Opsi:`);
-  console.log(`    [1] 1 wallet      contoh: first  atau  3`);
-  console.log(`    [2] Beberapa      contoh: first,2,5  atau  1,3,7`);
-  console.log(`    [3] Semua         ketik:  all`);
-  console.log(`    [4] Dari X        contoh: from 3`);
-  const walletInput = await prompt(`\n[?] Pilih wallet: `);
-  const selectedIdx = parseWalletSelection(walletInput, env.privateKeys);
-  if (selectedIdx.length === 0) { console.error("[!] Tidak ada wallet yang dipilih"); process.exit(1); }
-  const selectedWallets = selectedIdx.map(i => env.privateKeys[i]);
-  console.log(`[@] Dipilih: ${selectedWallets.map(w => `wallet ${w.label}`).join(", ")}`);
+  console.log(`\n[@] Total wallet: ${env.privateKeys.length}`);
+  console.log(`\n    [1] 1 wallet`);
+  console.log(`    [2] Beberapa wallet`);
+  console.log(`    [3] all`);
+  console.log(`    [4] from X`);
+  const modeInput = (await prompt(`\n[?] Pilih opsi: `)).trim();
+
+  let selectedWallets = [];
+  if (modeInput === "all" || modeInput === "3") {
+    selectedWallets = env.privateKeys;
+  } else if (modeInput.startsWith("from")) {
+    const idx = parseWalletSelection(modeInput, env.privateKeys);
+    if (idx.length === 0) { console.error("[!] Input tidak valid"); process.exit(1); }
+    selectedWallets = idx.map(i => env.privateKeys[i]);
+  } else if (modeInput === "1") {
+    // 1 wallet — tanya wallet mana
+    console.log(`[@] Masukkan nomor wallet (1-${env.privateKeys.length}) atau "first":`);
+    const wInput = (await prompt(`[?] Wallet: `)).trim();
+    const idx = parseWalletSelection(wInput, env.privateKeys);
+    if (idx.length === 0) { console.error("[!] Wallet tidak ditemukan"); process.exit(1); }
+    selectedWallets = [env.privateKeys[idx[0]]];
+  } else if (modeInput === "2") {
+    // Beberapa wallet
+    console.log(`[@] Masukkan nomor wallet, pisah koma (contoh: first,2,5 atau 1,3,7):`);
+    const wInput = (await prompt(`[?] Wallet: `)).trim();
+    const idx = parseWalletSelection(wInput, env.privateKeys);
+    if (idx.length === 0) { console.error("[!] Wallet tidak ditemukan"); process.exit(1); }
+    selectedWallets = idx.map(i => env.privateKeys[i]);
+  } else {
+    console.error("[!] Opsi tidak valid"); process.exit(1);
+  }
+
+  if (selectedWallets.length === 0) { console.error("[!] Tidak ada wallet dipilih"); process.exit(1); }
+  console.log(`[@] Dipilih: ${selectedWallets.length} wallet (${selectedWallets.map(w => `wallet ${w.label}`).join(", ")})`);
+
 
   // ── Fetch drop info dari GQL pake wallet pertama (tanpa auth dulu) ──
   console.log(`\n[@] Fetching drop info ...`);
@@ -428,6 +453,12 @@ async function main() {
   }
 
   const gqlStagesInfo = gqlDropData?.data?.dropBySlug?.stages ?? [];
+  // DEBUG — hapus setelah konfirmasi data bener
+  if (gqlStagesInfo.length > 0) {
+    console.log(`\n[DEBUG] Stage 0 raw:`, JSON.stringify(gqlStagesInfo[0], null, 2));
+  } else {
+    console.log(`\n[DEBUG] GQL response:`, JSON.stringify(gqlDropData, null, 2));
+  }
 
   // Fetch REST juga buat data tambahan (start_time, end_time)
   let restStages = [];
