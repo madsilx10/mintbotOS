@@ -152,7 +152,7 @@ async function fetchEligibility(walletAddress, collectionSlug, jwt, apiKey) {
     ...(apiKey ? { "X-API-KEY": apiKey } : {}),
     ...(jwt ? { Cookie: `access_token=${jwt}` } : {}),
   };
-  const res = await fetch("https://api.opensea.io/graphql/", {
+  const res = await fetch("https://gql.opensea.io/graphql", {
     method: "POST", headers,
     body: JSON.stringify({
       operationName: "DropEligibilityQuery",
@@ -268,6 +268,54 @@ async function mintStage(wallet, contractAddress, stage, gqlStage, quantity, slu
   return tx;
 }
 
+// ─── Fetch drop info via GraphQL (lebih lengkap) ─────────────────────────────
+async function fetchDropGQL(collectionSlug, walletAddress, jwt, apiKey) {
+  const headers = {
+    "Content-Type": "application/json",
+    "Origin": "https://opensea.io",
+    "X-App-Id": "opensea-web",
+    ...(apiKey ? { "X-API-KEY": apiKey } : {}),
+    ...(jwt ? { Cookie: `access_token=${jwt}` } : {}),
+  };
+  const res = await fetch("https://gql.opensea.io/graphql", {
+    method: "POST", headers,
+    body: JSON.stringify({
+      operationName: "DropEligibilityQuery",
+      variables: { address: walletAddress, collectionSlug },
+      extensions: {
+        persistedQuery: {
+          version: 1,
+          sha256Hash: "d893f026d731e8f14986921fa4229098e018289f6cc7683f8ee2dd83749dd95d",
+        },
+      },
+    }),
+  });
+  if (!res.ok) throw new Error(`GQL drop ${res.status}`);
+  return res.json();
+}
+
+// ─── Parse wallet selection input ────────────────────────────────────────────
+function parseWalletSelection(input, keys) {
+  const total = keys.length;
+  input = input.trim().toLowerCase();
+  if (!input || input === "all") return keys.map((_, i) => i);
+
+  // "from X" — dari index X sampai akhir
+  const fromMatch = input.match(/^from\s+(\d+)$/);
+  if (fromMatch) {
+    const start = parseInt(fromMatch[1]) - 1;
+    return Array.from({ length: total - start }, (_, i) => start + i).filter(i => i >= 0 && i < total);
+  }
+
+  // Comma separated: "1,3,16" atau "first,2,8"
+  return input.split(",").map(s => {
+    s = s.trim();
+    if (s === "first") return 0;
+    const n = parseInt(s);
+    return isNaN(n) ? -1 : n - 1;
+  }).filter(i => i >= 0 && i < total);
+}
+
 // ─── Main ─────────────────────────────────────────────────────────────────────
 async function main() {
   const env = loadEnv();
@@ -295,36 +343,64 @@ async function main() {
   const chain = "ethereum";
   const rpcUrl = env.rpcs[chain] ?? DEFAULT_RPC[chain];
 
-  console.log(`\n[@] Fetching drop: ${slug} ...`);
-  let drop;
-  try { drop = await fetchDrop(slug, env.apiKey); }
-  catch (e) { console.error(`[!] ${e.message}`); process.exit(1); }
+  // ── Pilih wallet ──
+  console.log(`\n[@] Total wallet di .env: ${env.privateKeys.length}`);
+  env.privateKeys.forEach((pk, i) => console.log(`    [${i+1}] ${pk.label}`));
+  const walletInput = await prompt(`[?] Wallet mana? (all / 1,3,16 / first,2,8 / from 3): `);
+  const selectedIdx = parseWalletSelection(walletInput, env.privateKeys);
+  const selectedWallets = selectedIdx.map(i => env.privateKeys[i]);
+  console.log(`[@] Dipilih: ${selectedWallets.map(w => w.label).join(", ")}`);
 
-  const restStages = drop.stages ?? [];
-  const remaining = (drop.total_supply ?? 0) - (drop.total_minted ?? 0);
+  // ── Fetch drop info dari GQL pake wallet pertama (tanpa auth dulu) ──
+  console.log(`\n[@] Fetching drop info ...`);
+  let gqlDropData;
+  try {
+    // Ambil address dari PK pertama buat dummy fetch
+    const { ethers } = await import("ethers");
+    const firstAddr = new ethers.Wallet(selectedWallets[0].key).address;
+    // Auth dulu biar dapat data lengkap
+    let jwt = null;
+    try {
+      jwt = await siweAuth(selectedWallets[0].key, firstAddr, cleanUrl);
+    } catch { /* lanjut tanpa auth */ }
+    gqlDropData = await fetchDropGQL(slug, firstAddr, jwt, env.apiKey);
+  } catch (e) {
+    console.error(`[!] Gagal fetch drop: ${e.message}`); process.exit(1);
+  }
 
+  const gqlStagesInfo = gqlDropData?.data?.dropBySlug?.stages ?? [];
+
+  // Fetch REST juga buat data tambahan (start_time, end_time)
+  let restStages = [];
+  try {
+    const drop = await fetchDrop(slug, env.apiKey);
+    restStages = drop.stages ?? [];
+  } catch { /* opsional */ }
+
+  // ── Tampilkan mint schedule dari GQL ──
   console.log(`\n${LINE}`);
-  console.log(`[+] ${drop.name ?? slug}`);
-  console.log(`[@] Chain    : ${drop.chain ?? chain}`);
+  console.log(`[+] ${slug}`);
+  console.log(`[@] Chain    : ethereum`);
   console.log(`[@] Contract : ${contractAddress}`);
-  console.log(`[@] Supply   : ${drop.total_supply ?? "?"} total | ${drop.total_minted ?? 0} minted | ${remaining} remaining`);
   console.log(LINE);
-
-  // Print stages
-  console.log(`\n[+] MINT SCHEDULE (${restStages.length} phase)\n`);
-  restStages.forEach((s) => {
-    const status = stageStatus(s);
+  console.log(`\n[+] MINT SCHEDULE (${gqlStagesInfo.length} phase)\n`);
+  gqlStagesInfo.forEach((gs, i) => {
+    const rs = restStages[i] ?? {};
+    const name = rs.name ?? gs.label ?? gs.stageType ?? `Phase ${i+1}`;
+    const status = rs.start_time ? stageStatus(rs) : "ACTIVE";
     const icon = status === "ACTIVE" ? "[LIVE]" : status === "UPCOMING" ? "[SOON]" : "[END] ";
-    console.log(`  ${icon} ${s.name ?? "Unknown"} | ${formatPrice(s.price)} | max ${s.max_per_wallet ?? "?"}/wallet`);
-    if (s.start_time) console.log(`         Starts: ${formatDate(s.start_time)}`);
+    const price = gs.eligiblePrice?.token?.unit ?? 0;
+    const maxW = gs.eligibleMaxTotalMintableByWallet ?? gs.maxTotalMintableByWallet ?? 1;
+    console.log(`  ${icon} [${i+1}] ${name} | ${price === 0 ? "FREE" : price + " ETH"} | max ${maxW}/wallet`);
+    if (rs.start_time) console.log(`         Starts: ${formatDate(rs.start_time)}`);
   });
 
   // ── Proses tiap wallet ──
   console.log(`\n${LINE}`);
-  console.log(`[+] MINT — ${env.privateKeys.length} wallet`);
+  console.log(`[+] MINT — ${selectedWallets.length} wallet`);
   console.log(LINE);
 
-  for (const { label, key: privKey } of env.privateKeys) {
+  for (const { label, key: privKey } of selectedWallets) {
     let wallet, walletAddress;
     try {
       const { ethers } = await import("ethers");
@@ -351,7 +427,7 @@ async function main() {
     // Cek eligibility via GraphQL
     let gqlStages = [];
     try {
-      const gqlData = await fetchEligibility(walletAddress, slug, jwt, env.apiKey);
+      const gqlData = await fetchDropGQL(slug, walletAddress, jwt, env.apiKey);
       gqlStages = gqlData?.data?.dropBySlug?.stages ?? [];
     } catch (e) {
       console.log(`    [!] Gagal fetch eligibility: ${e.message}`);
@@ -370,7 +446,7 @@ async function main() {
     for (let i = 0; i < gqlStages.length; i++) {
       const gs = gqlStages[i];
       const rs = restStages[i] ?? {};
-      const stageName = rs.name ?? gs.label ?? gs.stageType ?? `Stage ${i + 1}`;
+      const stageName = rs.name ?? gs.label ?? gs.stageType ?? `Phase ${i + 1}`;
       const status = rs.start_time ? stageStatus(rs) : "ACTIVE";
 
       if (!gs.isEligible) {
