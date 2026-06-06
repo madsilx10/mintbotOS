@@ -33,12 +33,32 @@ const SEADROP_ABI = [
 
 // Default RPCs per chain
 const DEFAULT_RPC = {
-  ethereum: "https://eth.llamarpc.com",
-  base:     "https://base.llamarpc.com",
-  polygon:  "https://polygon.llamarpc.com",
-  arbitrum: "https://arbitrum.llamarpc.com",
-  optimism: "https://optimism.llamarpc.com",
+  ethereum: [
+    "https://eth.llamarpc.com",
+    "https://ethereum.publicnode.com",
+    "https://rpc.ankr.com/eth",
+    "https://1rpc.io/eth",
+  ],
+  base:     ["https://base.llamarpc.com", "https://base.publicnode.com"],
+  polygon:  ["https://polygon.llamarpc.com", "https://polygon.publicnode.com"],
+  arbitrum: ["https://arbitrum.llamarpc.com", "https://arbitrum.publicnode.com"],
+  optimism: ["https://optimism.llamarpc.com", "https://optimism.publicnode.com"],
 };
+
+async function getWorkingRpc(chain, customRpc) {
+  const { ethers } = await import("ethers");
+  const candidates = customRpc
+    ? [customRpc, ...(DEFAULT_RPC[chain] ?? [])]
+    : (DEFAULT_RPC[chain] ?? []);
+  for (const url of candidates) {
+    try {
+      const p = new ethers.JsonRpcProvider(url);
+      await Promise.race([p.getBlockNumber(), new Promise((_, r) => setTimeout(() => r(new Error("timeout")), 3000))]);
+      return url;
+    } catch { continue; }
+  }
+  throw new Error(`Tidak ada RPC yang berfungsi untuk ${chain}`);
+}
 
 // ─── Load .env ────────────────────────────────────────────────────────────────
 function loadEnv() {
@@ -151,9 +171,13 @@ async function fetchEligibility(walletAddress, collectionSlug, jwt, apiKey) {
   const headers = {
     "Content-Type": "application/json",
     "Origin": "https://opensea.io",
+    "Referer": "https://opensea.io/",
+    "User-Agent": "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36",
     "X-App-Id": "opensea-web",
+    "X-Build-Id": "mainnet",
     ...(apiKey ? { "X-API-KEY": apiKey } : {}),
-    ...(jwt ? { Cookie: `access_token=${jwt}` } : {}),
+    ...(jwt ? { "Cookie": `access_token=${jwt}; auth_hint=true` } : {}),
+    ...(jwt ? { "Authorization": `Bearer ${jwt}` } : {}),
   };
   const res = await fetch("https://gql.opensea.io/graphql", {
     method: "POST", headers,
@@ -276,9 +300,13 @@ async function fetchDropGQL(collectionSlug, walletAddress, jwt, apiKey) {
   const headers = {
     "Content-Type": "application/json",
     "Origin": "https://opensea.io",
+    "Referer": "https://opensea.io/",
+    "User-Agent": "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36",
     "X-App-Id": "opensea-web",
+    "X-Build-Id": "mainnet",
     ...(apiKey ? { "X-API-KEY": apiKey } : {}),
-    ...(jwt ? { Cookie: `access_token=${jwt}` } : {}),
+    ...(jwt ? { "Cookie": `access_token=${jwt}; auth_hint=true` } : {}),
+    ...(jwt ? { "Authorization": `Bearer ${jwt}` } : {}),
   };
   const res = await fetch("https://gql.opensea.io/graphql", {
     method: "POST", headers,
@@ -356,7 +384,17 @@ async function main() {
 
   const cleanUrl = inputUrl.replace(/\/(overview|drop|mint)\/?$/, "");
   const chain = "ethereum";
-  const rpcUrl = env.rpcs[chain] ?? DEFAULT_RPC[chain];
+  process.stdout.write("[@] Mencari RPC ...");
+  let rpcUrl;
+  try {
+    rpcUrl = await getWorkingRpc(chain, env.rpcs[chain]);
+    process.stdout.write(`[@] RPC OK: ${rpcUrl}
+`);
+  } catch (e) {
+    process.stdout.write(`[!] ${e.message}
+`);
+    process.exit(1);
+  }
 
   // ── Pilih wallet ──
   console.log(`\n[@] Wallet tersedia (${env.privateKeys.length} total):`);
@@ -407,7 +445,7 @@ async function main() {
   console.log(`\n[+] MINT SCHEDULE (${gqlStagesInfo.length} phase)\n`);
   gqlStagesInfo.forEach((gs, i) => {
     const rs = restStages[i] ?? {};
-    const name = rs.name ?? gs.label ?? gs.stageType ?? `Phase ${i+1}`;
+    const name = rs.name ?? gs.label ?? (gs.stageType === "PUBLIC_SALE" ? "Public" : gs.stageType === "SIGNED_PRESALE" ? `Presale ${i+1}` : `Phase ${i+1}`);
     const status = rs.start_time ? stageStatus(rs) : "ACTIVE";
     const icon = status === "ACTIVE" ? "[LIVE]" : status === "UPCOMING" ? "[SOON]" : "[END] ";
     const price = gs.eligiblePrice?.token?.unit ?? 0;
@@ -467,7 +505,9 @@ async function main() {
     for (let i = 0; i < gqlStages.length; i++) {
       const gs = gqlStages[i];
       const rs = restStages[i] ?? {};
-      const stageName = rs.name ?? gs.label ?? gs.stageType ?? `Phase ${i + 1}`;
+      // REST punya nama asli (Demoonz Team, GTDemoonz, dll)
+      // GQL punya stageType (SIGNED_PRESALE, PUBLIC_SALE)
+      const stageName = rs.name ?? gs.label ?? (gs.stageType === "PUBLIC_SALE" ? "Public" : gs.stageType === "SIGNED_PRESALE" ? `Presale ${i + 1}` : `Phase ${i + 1}`);
       const status = rs.start_time ? stageStatus(rs) : "ACTIVE";
 
       if (!gs.isEligible) {
