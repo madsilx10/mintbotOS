@@ -62,7 +62,7 @@ async function getWorkingRpc(chain, customRpc) {
 
 // ─── Load .env ────────────────────────────────────────────────────────────────
 function loadEnv() {
-  const result = { apiKey: "", rpcs: {}, privateKeys: [] };
+  const result = { apiKey: "", accessToken: "", rpcs: {}, privateKeys: [] };
   try {
     const lines = readFileSync(resolve(process.cwd(), ".env"), "utf8").split("\n");
     for (const line of lines) {
@@ -74,6 +74,7 @@ function loadEnv() {
       const val = t.slice(eq + 1).trim().replace(/^["']|["']$/g, "");
       if (key === "OPENSEA_API_KEY") result.apiKey = val;
       else if (key.startsWith("RPC_")) result.rpcs[key.slice(4).toLowerCase()] = val;
+      else if (key === "ACCESS_TOKEN") result.accessToken = val;
       else if (key === "PK_FIRST" || key.startsWith("PK_")) {
       const rawLabel = key === "PK_FIRST" ? "first" : key.slice(3).toLowerCase();
       result.privateKeys.push({ label: rawLabel, key: val });
@@ -418,10 +419,12 @@ async function main() {
     const { ethers } = await import("ethers");
     const firstAddr = new ethers.Wallet(selectedWallets[0].key).address;
     // Auth dulu biar dapat data lengkap
-    let jwt = null;
-    try {
-      jwt = await siweAuth(selectedWallets[0].key, firstAddr, cleanUrl);
-    } catch { /* lanjut tanpa auth */ }
+    let jwt = env.accessToken || null;
+    if (!jwt) {
+      try {
+        jwt = await siweAuth(selectedWallets[0].key, firstAddr, cleanUrl);
+      } catch { /* lanjut tanpa auth */ }
+    }
     gqlDropData = await fetchDropGQL(slug, firstAddr, jwt, env.apiKey);
   } catch (e) {
     console.error(`[!] Gagal fetch drop: ${e.message}`); process.exit(1);
@@ -479,14 +482,19 @@ async function main() {
 
     console.log(`\n[@] wallet ${label} | ${walletAddress}`);
 
-    // Auth SIWE
+    // Auth — pakai ACCESS_TOKEN dari .env kalau ada, fallback ke SIWE
     let jwt = null;
-    try {
-      process.stdout.write(`    [~] Auth ...`);
-      jwt = await siweAuth(privKey, walletAddress, cleanUrl);
-      process.stdout.write(`\r    [+] Auth OK\n`);
-    } catch (e) {
-      process.stdout.write(`\r    [!] Auth gagal: ${e.message}\n`);
+    if (env.accessToken) {
+      jwt = env.accessToken;
+      console.log(`    [+] Auth: pakai ACCESS_TOKEN dari .env`);
+    } else {
+      try {
+        process.stdout.write(`    [~] Auth SIWE ...`);
+        jwt = await siweAuth(privKey, walletAddress, cleanUrl);
+        process.stdout.write(`\r    [+] Auth SIWE OK\n`);
+      } catch (e) {
+        process.stdout.write(`\r    [!] Auth gagal: ${e.message}\n`);
+      }
     }
 
     // Cek eligibility via GraphQL
