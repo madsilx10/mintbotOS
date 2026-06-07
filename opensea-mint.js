@@ -166,9 +166,12 @@ async function siweAuth(privateKey, walletAddress, collectionUrl) {
     if (m) cookieMap[m[1].trim()] = m[2].trim();
   }
   if (!cookieMap["access_token"]) throw new Error("JWT tidak ditemukan di response");
-  // Return full cookie string yang relevan
+  // Tambahin connected-account cookies yang diperlukan GQL
+  cookieMap["connected-account-server-hint"] = walletAddress;
+  cookieMap["connected-account-hint"] = walletAddress;
+  cookieMap["auth_hint"] = "true";
   return Object.entries(cookieMap)
-    .filter(([k]) => ["access_token", "auth_hint", "refresh_token"].includes(k))
+    .filter(([k]) => ["access_token", "auth_hint", "refresh_token", "connected-account-server-hint", "connected-account-hint"].includes(k))
     .map(([k, v]) => `${k}=${v}`)
     .join("; ");
 }
@@ -294,7 +297,7 @@ async function fetchDropGQL(collectionSlug, walletAddress, jwt, apiKey) {
     "User-Agent": "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36",
     "X-Active-Address": walletAddress,
     ...(apiKey ? { "X-API-KEY": apiKey } : {}),
-    ...(jwt ? { "Cookie": jwt } : {}),
+    ...(jwt ? { "Cookie": jwt.includes("connected-account") ? jwt : `${jwt}; connected-account-server-hint=${walletAddress}; connected-account-hint=${walletAddress}; auth_hint=true` } : {}),
   };
 
   const res = await fetch(url, { method: "GET", headers });
