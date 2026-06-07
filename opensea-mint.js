@@ -62,7 +62,7 @@ async function getWorkingRpc(chain, customRpc) {
 
 // ─── Load .env ────────────────────────────────────────────────────────────────
 function loadEnv() {
-  const result = { apiKey: "", accessToken: "", rpcs: {}, privateKeys: [] };
+  const result = { apiKey: "", accessToken: "", rpcs: {}, privateKeys: [], gasMultiplier: 1.2, maxGasGwei: 0, stages: {}, collectionUrl: "", contractAddress: "" };
   try {
     const lines = readFileSync(resolve(process.cwd(), ".env"), "utf8").split("\n");
     for (const line of lines) {
@@ -75,6 +75,11 @@ function loadEnv() {
       if (key === "OPENSEA_API_KEY") result.apiKey = val;
       else if (key.startsWith("RPC_")) result.rpcs[key.slice(4).toLowerCase()] = val;
       else if (key === "ACCESS_TOKEN") result.accessToken = val;
+      else if (key === "GAS_MULTIPLIER") result.gasMultiplier = parseFloat(val) || 1.2;
+      else if (key === "MAX_GAS_GWEI") result.maxGasGwei = parseFloat(val) || 0;
+      else if (key === "COLLECTION_URL") result.collectionUrl = val;
+      else if (key === "CONTRACT_ADDRESS") result.contractAddress = val;
+      else if (key.startsWith("STAGE_")) result.stages[key.slice(6)] = val;
       else if (key === "PK_FIRST" || key.startsWith("PK_")) {
       const rawLabel = key === "PK_FIRST" ? "first" : key.slice(3).toLowerCase();
       result.privateKeys.push({ label: rawLabel, key: val });
@@ -170,10 +175,11 @@ async function siweAuth(privateKey, walletAddress, collectionUrl) {
   cookieMap["connected-account-server-hint"] = walletAddress;
   cookieMap["connected-account-hint"] = walletAddress;
   cookieMap["auth_hint"] = "true";
-  return Object.entries(cookieMap)
+  const cookieStr = Object.entries(cookieMap)
     .filter(([k]) => ["access_token", "auth_hint", "refresh_token", "connected-account-server-hint", "connected-account-hint"].includes(k))
     .map(([k, v]) => `${k}=${v}`)
     .join("; ");
+  return cookieStr;
 }
 
 // ─── GraphQL DropEligibilityQuery ─────────────────────────────────────────────
@@ -227,7 +233,7 @@ function stageStatus(s) {
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
 // ─── Mint satu stage ──────────────────────────────────────────────────────────
-async function mintStage(wallet, contractAddress, stage, gqlStage, quantity, slug, walletAddress, jwt, apiKey) {
+async function mintStage(wallet, contractAddress, stage, gqlStage, quantity, slug, walletAddress, jwt, apiKey, gasMultiplier = 1.2) {
   const { ethers } = await import("ethers");
   const seadrop = new ethers.Contract(SEADROP_ADDRESS, SEADROP_ABI, wallet);
 
@@ -256,7 +262,7 @@ async function mintStage(wallet, contractAddress, stage, gqlStage, quantity, slu
       FEE_RECIPIENT,
       ethers.ZeroAddress,
       quantity,
-      { value: totalValue }
+      { value: totalValue, gasPrice: await wallet.provider.getFeeData().then(f => BigInt(Math.floor(Number(f.gasPrice) * gasMultiplier))) }
     );
   } else {
     // mintAllowList — butuh Merkle proof
@@ -271,7 +277,7 @@ async function mintStage(wallet, contractAddress, stage, gqlStage, quantity, slu
       quantity,
       mintParams,
       proof,
-      { value: totalValue }
+      { value: totalValue, gasPrice: await wallet.provider.getFeeData().then(f => BigInt(Math.floor(Number(f.gasPrice) * gasMultiplier))) }
     );
   }
 
@@ -350,12 +356,18 @@ async function main() {
     process.exit(1);
   }
 
-  const inputUrl = await prompt("\n[?] OpenSea collection URL: ");
-  if (!inputUrl) { console.error("[!] URL kosong"); process.exit(1); }
+  let inputUrl = env.collectionUrl;
+  let contractAddress = env.contractAddress;
 
-  const contractAddress = await prompt("[?] Contract address koleksi: ");
+  if (!inputUrl) {
+    inputUrl = await prompt("\n[?] OpenSea collection URL: ");
+    if (!inputUrl) { console.error("[!] URL kosong"); process.exit(1); }
+  }
   if (!contractAddress || !/^0x[0-9a-fA-F]{40}$/.test(contractAddress)) {
-    console.error("[!] Contract address tidak valid"); process.exit(1);
+    contractAddress = await prompt("[?] Contract address koleksi: ");
+    if (!contractAddress || !/^0x[0-9a-fA-F]{40}$/.test(contractAddress)) {
+      console.error("[!] Contract address tidak valid"); process.exit(1);
+    }
   }
 
   let slug;
@@ -424,12 +436,12 @@ async function main() {
     const firstAddr = new ethers.Wallet(selectedWallets[0].key).address.toLowerCase();
     // Auth dulu biar dapat data lengkap
     let jwt = null;
-    if (env.accessToken) {
-      jwt = `access_token=${env.accessToken}; connected-account-server-hint=${firstAddr}; connected-account-hint=${firstAddr}; auth_hint=true`;
-    } else {
-      try {
-        jwt = await siweAuth(selectedWallets[0].key, firstAddr, cleanUrl);
-      } catch { /* lanjut tanpa auth */ }
+    try {
+      jwt = await siweAuth(selectedWallets[0].key, firstAddr, cleanUrl);
+    } catch {
+      if (env.accessToken) {
+        jwt = `access_token=${env.accessToken}; connected-account-server-hint=${firstAddr}; connected-account-hint=${firstAddr}; auth_hint=true`;
+      }
     }
     gqlDropData = await fetchDropGQL(slug, firstAddr, jwt, env.apiKey);
   } catch (e) {
@@ -453,7 +465,7 @@ async function main() {
   console.log(`\n[+] MINT SCHEDULE (${gqlStagesInfo.length} phase)\n`);
   gqlStagesInfo.forEach((gs, i) => {
     const rs = restStages[i] ?? {};
-    const name = rs.name ?? gs.label ?? (gs.stageType === "PUBLIC_SALE" ? "Public" : gs.stageType === "SIGNED_PRESALE" ? `Presale ${i+1}` : `Phase ${i+1}`);
+    const name = env.stages[String(gs.stageIndex)] ?? rs.name ?? (gs.stageType === "PUBLIC_SALE" ? "Public" : `Presale ${gs.stageIndex}`);
     const status = rs.start_time ? stageStatus(rs) : "ACTIVE";
     const icon = status === "ACTIVE" ? "[LIVE]" : status === "UPCOMING" ? "[SOON]" : "[END] ";
     const price = gs.eligiblePrice?.token?.unit ?? 0;
@@ -481,18 +493,17 @@ async function main() {
 
     console.log(`\n[@] wallet ${label} | ${walletAddress}`);
 
-    // Auth — pakai ACCESS_TOKEN dari .env kalau ada, fallback ke SIWE
+    // Auth — SIWE dulu, ACCESS_TOKEN dari .env sebagai fallback
     let jwt = null;
-    if (env.accessToken) {
-      jwt = `access_token=${env.accessToken}; connected-account-server-hint=${walletAddress}; connected-account-hint=${walletAddress}; auth_hint=true`;
-      console.log(`    [+] Auth: pakai ACCESS_TOKEN dari .env`);
-    } else {
-      try {
-        process.stdout.write(`    [~] Auth SIWE ...`);
-        jwt = await siweAuth(privKey, walletAddress, cleanUrl);
-        process.stdout.write(`\r    [+] Auth SIWE OK\n`);
-      } catch (e) {
-        process.stdout.write(`\r    [!] Auth gagal: ${e.message}\n`);
+    try {
+      process.stdout.write(`    [~] Auth SIWE ...`);
+      jwt = await siweAuth(privKey, walletAddress, cleanUrl);
+      process.stdout.write(`\r    [+] Auth OK\n`);
+    } catch (e) {
+      process.stdout.write(`\r    [!] SIWE gagal: ${e.message}\n`);
+      if (env.accessToken) {
+        jwt = `access_token=${env.accessToken}; connected-account-server-hint=${walletAddress}; connected-account-hint=${walletAddress}; auth_hint=true`;
+        console.log(`    [+] Auth: fallback ACCESS_TOKEN dari .env`);
       }
     }
 
@@ -525,7 +536,7 @@ async function main() {
       const rs = restStages[i] ?? {};
       // REST punya nama asli (Demoonz Team, GTDemoonz, dll)
       // GQL punya stageType (SIGNED_PRESALE, PUBLIC_SALE)
-      const stageName = rs.name ?? (gs.stageType === "PUBLIC_SALE" ? "Public Demoonzio" : gs.stageType === "SIGNED_PRESALE" ? `Presale ${gs.stageIndex}` : `Phase ${i + 1}`);
+      const stageName = env.stages[String(gs.stageIndex)] ?? rs.name ?? (gs.stageType === "PUBLIC_SALE" ? "Public" : `Presale ${gs.stageIndex}`);
       const status = rs.start_time ? stageStatus(rs) : "ACTIVE";
 
       if (!gs.isEligible) {
@@ -564,8 +575,19 @@ async function main() {
       }
 
       try {
+        // Cek gas price sekarang
+        const { ethers } = await import("ethers");
+        const provider = new ethers.JsonRpcProvider(rpcUrl);
+        const feeData = await provider.getFeeData();
+        const gasPriceGwei = parseFloat(ethers.formatUnits(feeData.gasPrice ?? 0n, "gwei"));
+        if (env.maxGasGwei > 0 && gasPriceGwei > env.maxGasGwei) {
+          console.log(`    [!] ${stageName}: Skip — gas terlalu tinggi (${gasPriceGwei.toFixed(1)} gwei > max ${env.maxGasGwei} gwei)`);
+          continue;
+        }
+        console.log(`    [@] Gas: ${gasPriceGwei.toFixed(1)} gwei (max: ${env.maxGasGwei > 0 ? env.maxGasGwei + " gwei" : "unlimited"})`);
+
         process.stdout.write(`    [~] Minting ${quantity}x ${stageName} ...`);
-        const tx = await mintStage(wallet, contractAddress, rs, gs, quantity, slug, walletAddress, jwt, env.apiKey);
+        const tx = await mintStage(wallet, contractAddress, rs, gs, quantity, slug, walletAddress, jwt, env.apiKey, env.gasMultiplier);
         process.stdout.write(`\r    [+] TX sent: ${tx.hash}\n`);
         process.stdout.write(`    [~] Waiting confirmation ...`);
         const receipt = await tx.wait();
