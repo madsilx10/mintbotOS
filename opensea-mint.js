@@ -437,9 +437,6 @@ async function main() {
   }
 
   const gqlStagesInfo = gqlDropData?.data?.dropBySlug?.stages ?? [];
-  // DEBUG — hapus setelah konfirmasi data bener
-  gqlStagesInfo.forEach((s,i) => console.log(`\n[DEBUG] Stage ${i}:`, JSON.stringify(s, null, 2)));
-
   // Fetch REST juga buat data tambahan (start_time, end_time)
   let restStages = [];
   try {
@@ -499,13 +496,17 @@ async function main() {
       }
     }
 
-    // Cek eligibility via GraphQL
+    // Cek eligibility via GraphQL per wallet
     let gqlStages = [];
     try {
       const gqlData = await fetchDropGQL(slug, walletAddress, jwt, env.apiKey);
       gqlStages = gqlData?.data?.dropBySlug?.stages ?? [];
     } catch (e) {
       console.log(`    [!] Gagal fetch eligibility: ${e.message}`);
+    }
+    if (gqlStages.length === 0) {
+      console.log(`    [!] Tidak ada data eligibility`);
+      continue;
     }
 
     // Cek ETH balance
@@ -520,10 +521,11 @@ async function main() {
     // Loop semua stage
     for (let i = 0; i < gqlStages.length; i++) {
       const gs = gqlStages[i];
+      // Match REST stage by position (urutan sama di kedua API)
       const rs = restStages[i] ?? {};
       // REST punya nama asli (Demoonz Team, GTDemoonz, dll)
       // GQL punya stageType (SIGNED_PRESALE, PUBLIC_SALE)
-      const stageName = rs.name ?? gs.label ?? (gs.stageType === "PUBLIC_SALE" ? "Public" : gs.stageType === "SIGNED_PRESALE" ? `Presale ${i + 1}` : `Phase ${i + 1}`);
+      const stageName = rs.name ?? (gs.stageType === "PUBLIC_SALE" ? "Public Demoonzio" : gs.stageType === "SIGNED_PRESALE" ? `Presale ${gs.stageIndex}` : `Phase ${i + 1}`);
       const status = rs.start_time ? stageStatus(rs) : "ACTIVE";
 
       if (!gs.isEligible) {
