@@ -438,11 +438,7 @@ async function main() {
 
   const gqlStagesInfo = gqlDropData?.data?.dropBySlug?.stages ?? [];
   // DEBUG — hapus setelah konfirmasi data bener
-  if (gqlStagesInfo.length > 0) {
-    console.log(`\n[DEBUG] Stage 0 raw:`, JSON.stringify(gqlStagesInfo[0], null, 2));
-  } else {
-    console.log(`\n[DEBUG] GQL response:`, JSON.stringify(gqlDropData, null, 2));
-  }
+  gqlStagesInfo.forEach((s,i) => console.log(`\n[DEBUG] Stage ${i}:`, JSON.stringify(s, null, 2)));
 
   // Fetch REST juga buat data tambahan (start_time, end_time)
   let restStages = [];
