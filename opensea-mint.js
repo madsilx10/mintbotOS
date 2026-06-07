@@ -157,44 +157,23 @@ async function siweAuth(privateKey, walletAddress, collectionUrl) {
   });
   if (!verifyRes.ok) throw new Error(`Verify ${verifyRes.status}`);
 
-  // Ambil JWT dari cookie
+  // Ambil semua cookies dari verify response
   const setCookies = verifyRes.headers.getSetCookie?.() ?? [];
+  const cookieMap = {};
   for (const c of setCookies) {
-    const m = c.match(/access_token=([^;]+)/);
-    if (m) return m[1];
+    const m = c.match(/^([^=]+)=([^;]*)/);
+    if (m) cookieMap[m[1].trim()] = m[2].trim();
   }
-  throw new Error("JWT tidak ditemukan di response");
+  if (!cookieMap["access_token"]) throw new Error("JWT tidak ditemukan di response");
+  // Return full cookie string yang relevan
+  return Object.entries(cookieMap)
+    .filter(([k]) => ["access_token", "auth_hint", "refresh_token"].includes(k))
+    .map(([k, v]) => `${k}=${v}`)
+    .join("; ");
 }
 
 // ─── GraphQL DropEligibilityQuery ─────────────────────────────────────────────
-async function fetchEligibility(walletAddress, collectionSlug, jwt, apiKey) {
-  const headers = {
-    "Content-Type": "application/json",
-    "Origin": "https://opensea.io",
-    "Referer": "https://opensea.io/",
-    "User-Agent": "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36",
-    "X-App-Id": "opensea-web",
-    "X-Build-Id": "mainnet",
-    ...(apiKey ? { "X-API-KEY": apiKey } : {}),
-    ...(jwt ? { "Cookie": `access_token=${jwt}; auth_hint=true` } : {}),
-    ...(jwt ? { "Authorization": `Bearer ${jwt}` } : {}),
-  };
-  const res = await fetch("https://gql.opensea.io/graphql", {
-    method: "POST", headers,
-    body: JSON.stringify({
-      operationName: "DropEligibilityQuery",
-      variables: { address: walletAddress, collectionSlug },
-      extensions: {
-        persistedQuery: {
-          version: 1,
-          sha256Hash: "d893f026d731e8f14986921fa4229098e018289f6cc7683f8ee2dd83749dd95d",
-        },
-      },
-    }),
-  });
-  if (!res.ok) throw new Error(`GraphQL ${res.status}`);
-  return res.json();
-}
+// fetchEligibility replaced by fetchDropGQL
 
 // ─── Ambil Merkle proof untuk allowlist stage ─────────────────────────────────
 async function fetchMerkleProof(collectionSlug, walletAddress, stageIndex, jwt, apiKey) {
@@ -297,30 +276,26 @@ async function mintStage(wallet, contractAddress, stage, gqlStage, quantity, slu
 
 // ─── Fetch drop info via GraphQL (lebih lengkap) ─────────────────────────────
 async function fetchDropGQL(collectionSlug, walletAddress, jwt, apiKey) {
+  const variables = JSON.stringify({ address: walletAddress, collectionSlug });
+  const extensions = JSON.stringify({
+    persistedQuery: {
+      version: 1,
+      sha256Hash: "d893f026d731e8f14986921fa4229098e018289f6cc7683f8ee2dd83749dd95d",
+    },
+  });
+  const url = `https://gql.opensea.io/graphql?operationName=DropEligibilityQuery&variables=${encodeURIComponent(variables)}&extensions=${encodeURIComponent(extensions)}`;
+
   const headers = {
-    "Content-Type": "application/json",
+    "Accept": "application/graphql-response+json, application/graphql+json, application/json, text/event-stream, multipart/mixed",
+    "Accept-Language": "id-ID;q=0.9,en-US;q=0.8,en;q=0.7",
     "Origin": "https://opensea.io",
     "Referer": "https://opensea.io/",
     "User-Agent": "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36",
-    "X-App-Id": "opensea-web",
-    "X-Build-Id": "mainnet",
     ...(apiKey ? { "X-API-KEY": apiKey } : {}),
-    ...(jwt ? { "Cookie": `access_token=${jwt}; auth_hint=true` } : {}),
-    ...(jwt ? { "Authorization": `Bearer ${jwt}` } : {}),
+    ...(jwt ? { "Cookie": jwt } : {}),
   };
-  const res = await fetch("https://gql.opensea.io/graphql", {
-    method: "POST", headers,
-    body: JSON.stringify({
-      operationName: "DropEligibilityQuery",
-      variables: { address: walletAddress, collectionSlug },
-      extensions: {
-        persistedQuery: {
-          version: 1,
-          sha256Hash: "d893f026d731e8f14986921fa4229098e018289f6cc7683f8ee2dd83749dd95d",
-        },
-      },
-    }),
-  });
+
+  const res = await fetch(url, { method: "GET", headers });
   if (!res.ok) throw new Error(`GQL drop ${res.status}`);
   return res.json();
 }
