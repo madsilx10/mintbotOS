@@ -292,6 +292,7 @@ async function fetchDropGQL(collectionSlug, walletAddress, jwt, apiKey) {
     "Origin": "https://opensea.io",
     "Referer": "https://opensea.io/",
     "User-Agent": "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36",
+    "X-Active-Address": walletAddress,
     ...(apiKey ? { "X-API-KEY": apiKey } : {}),
     ...(jwt ? { "Cookie": jwt } : {}),
   };
@@ -417,7 +418,7 @@ async function main() {
   try {
     // Ambil address dari PK pertama buat dummy fetch
     const { ethers } = await import("ethers");
-    const firstAddr = new ethers.Wallet(selectedWallets[0].key).address;
+    const firstAddr = new ethers.Wallet(selectedWallets[0].key).address.toLowerCase();
     // Auth dulu biar dapat data lengkap
     let jwt = env.accessToken || null;
     if (!jwt) {
@@ -473,7 +474,7 @@ async function main() {
     try {
       const { ethers } = await import("ethers");
       const w = new ethers.Wallet(privKey);
-      walletAddress = w.address;
+      walletAddress = w.address.toLowerCase();
       wallet = await getWallet(privKey, rpcUrl);
     } catch {
       console.log(`\n[!] ${label}: Gagal init wallet`);
