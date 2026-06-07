@@ -423,8 +423,10 @@ async function main() {
     const { ethers } = await import("ethers");
     const firstAddr = new ethers.Wallet(selectedWallets[0].key).address.toLowerCase();
     // Auth dulu biar dapat data lengkap
-    let jwt = env.accessToken || null;
-    if (!jwt) {
+    let jwt = null;
+    if (env.accessToken) {
+      jwt = `access_token=${env.accessToken}; connected-account-server-hint=${firstAddr}; connected-account-hint=${firstAddr}; auth_hint=true`;
+    } else {
       try {
         jwt = await siweAuth(selectedWallets[0].key, firstAddr, cleanUrl);
       } catch { /* lanjut tanpa auth */ }
@@ -489,7 +491,7 @@ async function main() {
     // Auth — pakai ACCESS_TOKEN dari .env kalau ada, fallback ke SIWE
     let jwt = null;
     if (env.accessToken) {
-      jwt = env.accessToken;
+      jwt = `access_token=${env.accessToken}; connected-account-server-hint=${walletAddress}; connected-account-hint=${walletAddress}; auth_hint=true`;
       console.log(`    [+] Auth: pakai ACCESS_TOKEN dari .env`);
     } else {
       try {
