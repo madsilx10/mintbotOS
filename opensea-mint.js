@@ -510,18 +510,23 @@ async function main() {
     stagesToAsk = picked.map(i => mintModuleStages[i]);
   }
 
+  // Tanya qty per stage — tapi qty max baru ketahuan setelah auth per wallet
+  // Simpan preferensi user dulu (pakai maxTotalMintableByWallet sebagai hint)
   for (const s of stagesToAsk) {
     const name = env.stages[String(s.stageIndex)] ?? s.label ?? `Stage`;
-    const maxQty = s.eligibleMaxTotalMintableByWallet ?? s.maxTotalMintableByWallet ?? 1;
-    if (maxQty === 1) {
+    // Pakai eligibleMaxTotalMintableByWallet kalau ada, fallback ke max
+    const eligibleMax = s.eligibleMaxTotalMintableByWallet;
+    const maxQty = eligibleMax ?? s.maxTotalMintableByWallet ?? 1;
+    const displayMax = eligibleMax ? `${eligibleMax}` : `? (max ${maxQty})`;
+    if (maxQty === 1 || eligibleMax === 1) {
       mintPlan[s.stageIndex] = 1;
-      console.log(`[@] ${name}: auto 1/1`);
+      console.log(`[@] ${name}: auto 1`);
     } else {
-      const input = await prompt(`[?] ${name}: max ${maxQty}/wallet — mau mint berapa? (enter = max) `);
+      const input = await prompt(`[?] ${name}: max ${displayMax}/wallet — mau mint berapa? (enter = max) `);
       const parsed = parseInt(input);
-      const qty = (!parsed || parsed < 1) ? maxQty : Math.min(parsed, maxQty);
-      mintPlan[s.stageIndex] = qty;
-      console.log(`[@] ${name}: ${qty}/${maxQty}`);
+      // -1 = pakai eligible max per wallet nanti (ditentukan saat auth)
+      mintPlan[s.stageIndex] = (!parsed || parsed < 1) ? -1 : parsed;
+      console.log(`[@] ${name}: ${mintPlan[s.stageIndex] === -1 ? "max" : mintPlan[s.stageIndex]}`);
     }
   }
 
@@ -570,6 +575,11 @@ async function main() {
       console.log(`    [!] Tidak ada data eligibility`);
       continue;
     }
+    // Merge startTime dari mintModuleStages ke gqlStages
+    gqlStages = gqlStages.map(gs => {
+      const mm = mintModuleStages.find(m => m.stageIndex === gs.stageIndex);
+      return { ...gs, startTime: mm?.startTime ?? null, label: mm?.label ?? gs.label };
+    });
 
     // Cek ETH balance
     let balance;
@@ -608,10 +618,12 @@ async function main() {
         continue;
       }
 
-      const quantity = mintPlan[gs.stageIndex];
+      const eligibleMax = gs.eligibleMaxTotalMintableByWallet ?? gs.maxTotalMintableByWallet ?? 1;
+      const plannedQty = mintPlan[gs.stageIndex];
+      const quantity = plannedQty === -1 ? eligibleMax : Math.min(plannedQty, eligibleMax);
       const pricePerUnit = gs.eligiblePrice?.token?.unit ?? gs.price?.token?.unit ?? 0;
       const totalEth = pricePerUnit * quantity;
-      console.log(`    [+] ${stageName}: qty ${quantity} | total ${totalEth} ETH`);
+      console.log(`    [+] ${stageName}: qty ${quantity}/${eligibleMax} | total ${totalEth} ETH`);
 
       // Cek balance cukup
       const { ethers } = await import("ethers");
