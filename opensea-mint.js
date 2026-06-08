@@ -284,6 +284,22 @@ async function mintStage(wallet, contractAddress, stage, gqlStage, quantity, slu
   return tx;
 }
 
+// ─── Fetch MintModuleQuery — dapat label, startTime, price tanpa auth ───────────
+async function fetchMintModule(collectionSlug, apiKey) {
+  const url = `https://gql.opensea.io/graphql?operationName=MintModuleQuery&variables=${encodeURIComponent(JSON.stringify({ collectionSlug }))}&extensions=${encodeURIComponent(JSON.stringify({ persistedQuery: { version: 1, sha256Hash: "2dc7d722d0b9022240a1bb9516c6c5b4e785eec8aae29b24efa330d887390987" } }))}`;
+  const headers = {
+    "Accept": "application/graphql-response+json, application/graphql+json, application/json",
+    "Origin": "https://opensea.io",
+    "Referer": "https://opensea.io/",
+    "User-Agent": "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36",
+    ...(apiKey ? { "X-API-KEY": apiKey } : {}),
+  };
+  const res = await fetch(url, { method: "GET", headers });
+  if (!res.ok) throw new Error(`MintModule ${res.status}`);
+  const data = await res.json();
+  return data?.data?.dropBySlug?.stages ?? [];
+}
+
 // ─── Fetch drop info via GraphQL (lebih lengkap) ─────────────────────────────
 async function fetchDropGQL(collectionSlug, walletAddress, jwt, apiKey) {
   const variables = JSON.stringify({ address: walletAddress, collectionSlug });
@@ -498,7 +514,7 @@ async function main() {
     try {
       process.stdout.write(`    [~] Auth SIWE ...`);
       jwt = await siweAuth(privKey, walletAddress, cleanUrl);
-      process.stdout.write(`\r    [+] Auth OK\n`);
+      process.stdout.write(`\r    [+] Auth OK              \n`);
     } catch (e) {
       process.stdout.write(`\r    [!] SIWE gagal: ${e.message}\n`);
       if (env.accessToken) {
@@ -532,12 +548,11 @@ async function main() {
     // Loop semua stage
     for (let i = 0; i < gqlStages.length; i++) {
       const gs = gqlStages[i];
-      // Match REST stage by position (urutan sama di kedua API)
-      const rs = restStages[i] ?? {};
+      const rs = {}; // REST tidak dipakai lagi
       // REST punya nama asli (Demoonz Team, GTDemoonz, dll)
       // GQL punya stageType (SIGNED_PRESALE, PUBLIC_SALE)
-      const stageName = env.stages[String(gs.stageIndex)] ?? rs.name ?? (gs.stageType === "PUBLIC_SALE" ? "Public" : `Presale ${gs.stageIndex}`);
-      const status = rs.start_time ? stageStatus(rs) : "ACTIVE";
+      const stageName = env.stages[String(gs.stageIndex)] ?? gs.label ?? (gs.stageType === "PUBLIC_SALE" ? "Public" : `Presale ${gs.stageIndex}`);
+      const status = gs.startTime ? stageStatus({ start_time: gs.startTime }) : "ACTIVE";
 
       if (!gs.isEligible) {
         console.log(`    [-] ${stageName}: Skip (not eligible)`);
@@ -553,7 +568,7 @@ async function main() {
       }
 
       const maxQty = gs.eligibleMaxTotalMintableByWallet ?? gs.maxTotalMintableByWallet ?? 1;
-      const pricePerUnit = gs.eligiblePrice?.token?.unit ?? 0;
+      const pricePerUnit = gs.eligiblePrice?.token?.unit ?? gs.price?.token?.unit ?? 0;
 
       // Tanya jumlah mint kalau max > 1
       let quantity = maxQty;
