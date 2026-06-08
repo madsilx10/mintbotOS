@@ -510,24 +510,10 @@ async function main() {
     stagesToAsk = picked.map(i => mintModuleStages[i]);
   }
 
-  // Tanya qty per stage — tapi qty max baru ketahuan setelah auth per wallet
-  // Simpan preferensi user dulu (pakai maxTotalMintableByWallet sebagai hint)
+  // Qty akan ditanya setelah auth wallet pertama (biar tau eligible max)
+  // mintPlan diisi -1 dulu = auto max
   for (const s of stagesToAsk) {
-    const name = env.stages[String(s.stageIndex)] ?? s.label ?? `Stage`;
-    // Pakai eligibleMaxTotalMintableByWallet kalau ada, fallback ke max
-    const eligibleMax = s.eligibleMaxTotalMintableByWallet;
-    const maxQty = eligibleMax ?? s.maxTotalMintableByWallet ?? 1;
-    const displayMax = eligibleMax ? `${eligibleMax}` : `? (max ${maxQty})`;
-    if (maxQty === 1 || eligibleMax === 1) {
-      mintPlan[s.stageIndex] = 1;
-      console.log(`[@] ${name}: auto 1`);
-    } else {
-      const input = await prompt(`[?] ${name}: max ${displayMax}/wallet — mau mint berapa? (enter = max) `);
-      const parsed = parseInt(input);
-      // -1 = pakai eligible max per wallet nanti (ditentukan saat auth)
-      mintPlan[s.stageIndex] = (!parsed || parsed < 1) ? -1 : parsed;
-      console.log(`[@] ${name}: ${mintPlan[s.stageIndex] === -1 ? "max" : mintPlan[s.stageIndex]}`);
-    }
+    mintPlan[s.stageIndex] = -1;
   }
 
   // ── Proses tiap wallet ──
@@ -535,7 +521,8 @@ async function main() {
   console.log(`[+] MINT — ${selectedWallets.length} wallet`);
   console.log(LINE);
 
-  for (const { label, key: privKey } of selectedWallets) {
+  for (let walletIdx = 0; walletIdx < selectedWallets.length; walletIdx++) {
+    const { label, key: privKey } = selectedWallets[walletIdx];
     let wallet, walletAddress;
     try {
       const { ethers } = await import("ethers");
@@ -563,7 +550,7 @@ async function main() {
       }
     }
 
-    // Cek eligibility via GraphQL per wallet
+    // Cek eligibility via GraphQL per wallet — dapat eligibleMax
     let gqlStages = [];
     try {
       const gqlData = await fetchDropGQL(slug, walletAddress, jwt, env.apiKey);
@@ -580,6 +567,27 @@ async function main() {
       const mm = mintModuleStages.find(m => m.stageIndex === gs.stageIndex);
       return { ...gs, startTime: mm?.startTime ?? null, label: mm?.label ?? gs.label };
     });
+
+    // Kalau wallet pertama, tanya qty berdasarkan eligibleMax yang udah ada
+    if (walletIdx === 0 && Object.values(mintPlan).every(v => v === -1)) {
+      console.log();
+      for (const stageIdx of Object.keys(mintPlan).map(Number)) {
+        const gs = gqlStages.find(s => s.stageIndex === stageIdx);
+        if (!gs) continue;
+        const name = env.stages[String(stageIdx)] ?? gs.label ?? `Stage`;
+        const eligibleMax = gs.eligibleMaxTotalMintableByWallet ?? gs.maxTotalMintableByWallet ?? 1;
+        if (eligibleMax <= 1) {
+          mintPlan[stageIdx] = 1;
+          console.log(`    [@] ${name}: auto 1/1`);
+        } else {
+          const input = await prompt(`    [?] ${name}: max ${eligibleMax}/wallet — mau mint berapa? (enter = max) `);
+          const parsed = parseInt(input);
+          mintPlan[stageIdx] = (!parsed || parsed < 1) ? eligibleMax : Math.min(parsed, eligibleMax);
+          console.log(`    [@] ${name}: ${mintPlan[stageIdx]}/${eligibleMax}`);
+        }
+      }
+      console.log();
+    }
 
     // Cek ETH balance
     let balance;
