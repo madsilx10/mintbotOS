@@ -460,35 +460,64 @@ async function main() {
       }
     }
     gqlDropData = await fetchDropGQL(slug, firstAddr, jwt, env.apiKey);
-  } catch (e) {
-    console.error(`[!] Gagal fetch drop: ${e.message}`); process.exit(1);
-  }
+  } catch { /* lanjut */ }
 
-  const gqlStagesInfo = gqlDropData?.data?.dropBySlug?.stages ?? [];
-  // Fetch REST juga buat data tambahan (start_time, end_time)
-  let restStages = [];
-  try {
-    const drop = await fetchDrop(slug, env.apiKey);
-    restStages = drop.stages ?? [];
-  } catch { /* opsional */ }
+  // Sort mintModuleStages by startTime
+  mintModuleStages.sort((a, b) => new Date(a.startTime) - new Date(b.startTime));
 
-  // ── Tampilkan mint schedule dari GQL ──
+  // ── Tampilkan mint schedule dari MintModule ──
   console.log(`\n${LINE}`);
   console.log(`[+] ${slug}`);
   console.log(`[@] Chain    : ethereum`);
   console.log(`[@] Contract : ${contractAddress}`);
   console.log(LINE);
-  console.log(`\n[+] MINT SCHEDULE (${gqlStagesInfo.length} phase)\n`);
-  gqlStagesInfo.forEach((gs, i) => {
-    const rs = restStages[i] ?? {};
-    const name = env.stages[String(gs.stageIndex)] ?? rs.name ?? (gs.stageType === "PUBLIC_SALE" ? "Public" : `Presale ${gs.stageIndex}`);
-    const status = rs.start_time ? stageStatus(rs) : "ACTIVE";
+  console.log(`\n[+] MINT SCHEDULE (${mintModuleStages.length} phase)\n`);
+  mintModuleStages.forEach((s, i) => {
+    const name = env.stages[String(s.stageIndex)] ?? s.label ?? `Stage ${i+1}`;
+    const status = s.startTime ? stageStatus({ start_time: s.startTime }) : "ACTIVE";
     const icon = status === "ACTIVE" ? "[LIVE]" : status === "UPCOMING" ? "[SOON]" : "[END] ";
-    const price = gs.eligiblePrice?.token?.unit ?? 0;
-    const maxW = gs.eligibleMaxTotalMintableByWallet ?? gs.maxTotalMintableByWallet ?? 1;
+    const price = s.price?.token?.unit ?? 0;
+    const maxW = s.eligibleMaxTotalMintableByWallet ?? s.maxTotalMintableByWallet ?? 1;
     console.log(`  ${icon} [${i+1}] ${name} | ${price === 0 ? "FREE" : price + " ETH"} | max ${maxW}/wallet`);
-    if (rs.start_time) console.log(`         Starts: ${formatDate(rs.start_time)}`);
+    if (s.startTime) console.log(`         Starts: ${formatDate(s.startTime)}`);
   });
+  
+  const gqlStagesInfo = mintModuleStages;
+
+  // ── Pilih stage yang mau dimint ──
+  console.log(`\n[@] Stage mana yang mau dimint?`);
+  mintModuleStages.forEach((s, i) => {
+    const name = env.stages[String(s.stageIndex)] ?? s.label ?? `Stage ${i+1}`;
+    console.log(`    [${i+1}] ${name}`);
+  });
+  console.log(`    [0] Semua eligible`);
+  const stageInput = (await prompt(`\n[?] Pilih stage (0/1/2/3/...): `)).trim();
+
+  // Build mintPlan: { stageIndex -> qty }
+  const mintPlan = {};
+  let stagesToAsk = [];
+
+  if (stageInput === "0" || stageInput === "") {
+    stagesToAsk = mintModuleStages;
+  } else {
+    const picked = stageInput.split(",").map(s => parseInt(s.trim()) - 1).filter(i => i >= 0 && i < mintModuleStages.length);
+    stagesToAsk = picked.map(i => mintModuleStages[i]);
+  }
+
+  for (const s of stagesToAsk) {
+    const name = env.stages[String(s.stageIndex)] ?? s.label ?? `Stage`;
+    const maxQty = s.eligibleMaxTotalMintableByWallet ?? s.maxTotalMintableByWallet ?? 1;
+    if (maxQty === 1) {
+      mintPlan[s.stageIndex] = 1;
+      console.log(`[@] ${name}: auto 1/1`);
+    } else {
+      const input = await prompt(`[?] ${name}: max ${maxQty}/wallet — mau mint berapa? (enter = max) `);
+      const parsed = parseInt(input);
+      const qty = (!parsed || parsed < 1) ? maxQty : Math.min(parsed, maxQty);
+      mintPlan[s.stageIndex] = qty;
+      console.log(`[@] ${name}: ${qty}/${maxQty}`);
+    }
+  }
 
   // ── Proses tiap wallet ──
   console.log(`\n${LINE}`);
@@ -567,19 +596,16 @@ async function main() {
         continue;
       }
 
-      const maxQty = gs.eligibleMaxTotalMintableByWallet ?? gs.maxTotalMintableByWallet ?? 1;
-      const pricePerUnit = gs.eligiblePrice?.token?.unit ?? gs.price?.token?.unit ?? 0;
-
-      // Tanya jumlah mint kalau max > 1
-      let quantity = maxQty;
-      if (maxQty > 1) {
-        const input = await prompt(`    [?] ${stageName}: max ${maxQty}/wallet — mau mint berapa? `);
-        const parsed = parseInt(input);
-        quantity = (!parsed || parsed < 1) ? maxQty : Math.min(parsed, maxQty);
+      // Skip kalau stage tidak di mintPlan
+      if (!(gs.stageIndex in mintPlan)) {
+        console.log(`    [-] ${stageName}: Skip (tidak dipilih)`);
+        continue;
       }
 
+      const quantity = mintPlan[gs.stageIndex];
+      const pricePerUnit = gs.eligiblePrice?.token?.unit ?? gs.price?.token?.unit ?? 0;
       const totalEth = pricePerUnit * quantity;
-      console.log(`    [+] ${stageName}: qty ${quantity}/${maxQty} | total ${totalEth} ETH`);
+      console.log(`    [+] ${stageName}: qty ${quantity} | total ${totalEth} ETH`);
 
       // Cek balance cukup
       const { ethers } = await import("ethers");
