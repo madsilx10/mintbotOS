@@ -462,6 +462,12 @@ async function main() {
     gqlDropData = await fetchDropGQL(slug, firstAddr, jwt, env.apiKey);
   } catch { /* lanjut */ }
 
+  // Fetch MintModule untuk data lengkap (label, startTime, price)
+  let mintModuleStages = [];
+  try {
+    mintModuleStages = await fetchMintModule(slug, env.apiKey);
+  } catch (e) { console.error(`[!] Gagal fetch mint module: ${e.message}`); process.exit(1); }
+
   // Sort mintModuleStages by startTime
   mintModuleStages.sort((a, b) => new Date(a.startTime) - new Date(b.startTime));
 
